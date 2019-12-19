@@ -12,37 +12,40 @@ class Tess:
         self.description = 'Set of functions for working with the USFWS Threatened and Endangered Species System'
         self.tess_api_base = "https://ecos.fws.gov/ecp0/TessQuery?request=query&xquery=/SPECIES_DETAIL"
 
-    def search(self, criteria):
+    def search(self, sppin_key):
+        sppin_key_parts = sppin_key.split(":")
 
-        tess_result = common_utils.processing_metadata()
-        tess_result["processing_metadata"]["status"] = "failure"
-        tess_result["processing_metadata"]["status_message"] = "Search failed"
-        if criteria.isdigit():
-            tess_result["processing_metadata"]["api"] = f'{self.tess_api_base}[TSN={criteria}]'
-            tess_result["parameters"]= {'tsn': criteria}
+        result = common_utils.processing_metadata()
+        result["sppin_key"] = sppin_key
+        result["date_processed"] = result["processing_metadata"]["date_processed"]
+        result["processing_metadata"]["status"] = "failure"
+        result["processing_metadata"]["status_message"] = "Search failed"
+        if sppin_key_parts[0] == "TSN":
+            result["processing_metadata"]["api"] = f'{self.tess_api_base}[TSN={sppin_key_parts[1]}]'
         else:
-            tess_result["processing_metadata"]["api"] = f'{self.tess_api_base}[SCINAME="{criteria}"]'
-            tess_result["parameters"]= {'Scientific Name': criteria}
+            result["processing_metadata"]["api"] = f'{self.tess_api_base}[SCINAME="{sppin_key_parts[1]}"]'
+
+        print(result["processing_metadata"]["api"])
 
         # Query the TESS XQuery service
-        tess_response = requests.get(tess_result["processing_metadata"]["api"])
+        tess_response = requests.get(result["processing_metadata"]["api"])
 
         if tess_response.status_code != 200:
-            tess_result["processing_metadata"]["status"] = "error"
-            tess_result["processing_metadata"]["status_message"] = f"HTTP Status Code: {tess_response.status_code}"
-            return tess_result
+            result["processing_metadata"]["status"] = "error"
+            result["processing_metadata"]["status_message"] = f"HTTP Status Code: {tess_response.status_code}"
+            return result
 
         # Build an unordered dict from the TESS XML response (we don't care about ordering for our purposes here)
-        tessDict = xmltodict.parse(tess_response.text, dict_constructor=dict)
+        tess_dict = xmltodict.parse(tess_response.text, dict_constructor=dict)
 
-        if "results" not in tessDict.keys() or tessDict["results"] is None:
-            tess_result["processing_metadata"]["status"] = "failure"
-            return tess_result
+        if "results" not in tess_dict.keys() or tess_dict["results"] is None:
+            result["processing_metadata"]["status"] = "failure"
+            return result
 
-        tess_result["processing_metadata"]["status"] = "success"
-        tess_result["data"] = tessDict["results"]
+        result["processing_metadata"]["status"] = "success"
+        result["data"] = tess_dict["results"]
 
-        return tess_result
+        return result
 
 
 class Ecos:

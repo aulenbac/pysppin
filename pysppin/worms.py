@@ -32,91 +32,97 @@ class Worms:
         })
         return taxonomy
 
-    def search(self, scientificname, name_source=None):
+    def search(self, sppin_key, name_source=None, source_date=None):
+
+        sppin_key_parts = sppin_key.split(":")
 
         headers = {'content-type': 'application/json'}
 
-        wormsResult = common_utils.processing_metadata()
-        wormsResult["processing_metadata"]["status_message"] = "Not Matched"
-        wormsResult["processing_metadata"]["search_key"] = f"Scientific Name:{scientificname}"
+        worms_result = common_utils.processing_metadata()
+        worms_result["sppin_key"] = sppin_key
+        worms_result["date_processed"] = worms_result["processing_metadata"]["date_processed"]
+        worms_result["processing_metadata"]["status"] = None
+        worms_result["processing_metadata"]["status_message"] = "Not Matched"
 
-        wormsResult["parameters"] = {
-            "Scientific Name": scientificname,
-            "Name Source": name_source
-        }
+        if name_source is not None:
+            worms_result["processing_metadata"]["name_source"] = name_source
 
-        wormsData = list()
-        aphiaIDs = list()
+        if source_date is not None:
+            worms_result["processing_metadata"]["source_date"] = source_date
 
-        url_ExactMatch = self.get_worms_search_url("ExactName", scientificname)
-        nameResults_exact = requests.get(url_ExactMatch, headers=headers)
+        worms_data = list()
+        aphia_ids = list()
 
-        if nameResults_exact.status_code == 200:
-            wormsDoc = nameResults_exact.json()[0]
-            wormsDoc["biological_taxonomy"] = self.build_worms_taxonomy(wormsDoc)
-            wormsResult["processing_metadata"]["api"] = url_ExactMatch
-            wormsResult["processing_metadata"]["status"] = "success"
-            wormsResult["processing_metadata"]["status_message"] = "Exact Match"
-            wormsData.append(wormsDoc)
-            if wormsDoc["AphiaID"] not in aphiaIDs:
-                aphiaIDs.append(wormsDoc["AphiaID"])
+        url_exact_match = self.get_worms_search_url("ExactName", sppin_key_parts[1])
+        name_results_exact = requests.get(url_exact_match, headers=headers)
+
+        if name_results_exact.status_code == 200:
+            worms_doc = name_results_exact.json()[0]
+            worms_doc["biological_taxonomy"] = self.build_worms_taxonomy(worms_doc)
+            worms_result["processing_metadata"]["api"] = url_exact_match
+            worms_result["processing_metadata"]["status"] = "success"
+            worms_result["processing_metadata"]["status_message"] = "Exact Match"
+            worms_data.append(worms_doc)
+            if worms_doc["AphiaID"] not in aphia_ids:
+                aphia_ids.append(worms_doc["AphiaID"])
         else:
-            url_FuzzyMatch = self.get_worms_search_url("FuzzyName", scientificname)
-            wormsResult["processing_metadata"]["api"] = url_FuzzyMatch
-            nameResults_fuzzy = requests.get(url_FuzzyMatch, headers=headers)
-            if nameResults_fuzzy.status_code == 200:
-                wormsDoc = nameResults_fuzzy.json()[0]
-                wormsDoc["biological_taxonomy"] = self.build_worms_taxonomy(wormsDoc)
-                wormsResult["processing_metadata"]["status"] = "success"
-                wormsResult["processing_metadata"]["status_message"] = "Fuzzy Match"
-                wormsData.append(wormsDoc)
-                if wormsDoc["AphiaID"] not in aphiaIDs:
-                    aphiaIDs.append(wormsDoc["AphiaID"])
+            url_fuzzy_match = self.get_worms_search_url("FuzzyName", sppin_key_parts[1])
+            worms_result["processing_metadata"]["api"] = url_fuzzy_match
+            name_results_fuzzy = requests.get(url_fuzzy_match, headers=headers)
+            if name_results_fuzzy.status_code == 200:
+                worms_doc = name_results_fuzzy.json()[0]
+                worms_doc["biological_taxonomy"] = self.build_worms_taxonomy(worms_doc)
+                worms_result["processing_metadata"]["status"] = "success"
+                worms_result["processing_metadata"]["status_message"] = "Fuzzy Match"
+                worms_data.append(worms_doc)
+                if worms_doc["AphiaID"] not in aphia_ids:
+                    aphia_ids.append(worms_doc["AphiaID"])
 
-        if len(wormsData) > 0 and "valid_AphiaID" in wormsData[0].keys():
-            valid_AphiaID = wormsData[0]["valid_AphiaID"]
-            while valid_AphiaID is not None:
-                if valid_AphiaID not in aphiaIDs:
-                    url_AphiaID = self.get_worms_search_url("AphiaID", valid_AphiaID)
-                    aphiaIDResults = requests.get(url_AphiaID, headers=headers)
-                    if aphiaIDResults.status_code == 200:
-                        wormsDoc = aphiaIDResults.json()
+        if len(worms_data) > 0 and "valid_AphiaID" in worms_data[0].keys():
+            valid_aphiaid = worms_data[0]["valid_AphiaID"]
+            while valid_aphiaid is not None:
+                if valid_aphiaid not in aphia_ids:
+                    url_aphiaid = self.get_worms_search_url("AphiaID", valid_aphiaid)
+                    aphiaid_results = requests.get(url_aphiaid, headers=headers)
+                    if aphiaid_results.status_code == 200:
+                        worms_doc = aphiaid_results.json()
                         # Build common biological_taxonomy structure
-                        wormsDoc["biological_taxonomy"] = self.build_worms_taxonomy(wormsDoc)
-                        wormsResult["processing_metadata"]["api"] = url_AphiaID
-                        wormsResult["processing_metadata"]["status"] = "success"
-                        wormsResult["processing_metadata"]["status_message"] = "Followed Valid AphiaID"
-                        wormsData.append(wormsDoc)
-                        if wormsDoc["AphiaID"] not in aphiaIDs:
-                            aphiaIDs.append(wormsDoc["AphiaID"])
-                        if "valid_AphiaID" in wormsDoc.keys():
-                            valid_AphiaID = wormsDoc["valid_AphiaID"]
+                        worms_doc["biological_taxonomy"] = self.build_worms_taxonomy(worms_doc)
+                        worms_result["processing_metadata"]["api"] = url_aphiaid
+                        worms_result["processing_metadata"]["status"] = "success"
+                        worms_result["processing_metadata"]["status_message"] = "Followed Valid AphiaID"
+                        worms_data.append(worms_doc)
+                        if worms_doc["AphiaID"] not in aphia_ids:
+                            aphia_ids.append(worms_doc["AphiaID"])
+                        if "valid_AphiaID" in worms_doc.keys():
+                            valid_aphiaid = worms_doc["valid_AphiaID"]
                         else:
-                            valid_AphiaID = None
+                            valid_aphiaid = None
                     else:
-                        valid_AphiaID = None
+                        valid_aphiaid = None
                 else:
-                    valid_AphiaID = None
+                    valid_aphiaid = None
 
-        if len(wormsData) > 0:
+        if len(worms_data) > 0:
             # Convert to common property names for resolvable_identifier, citation_string, and date_modified
             # from source properties
-            worms_data = list()
-            for record in wormsData:
+            new_worms_data = list()
+            for record in worms_data:
                 record["resolvable_identifier"] = record.pop("url")
                 record["citation_string"] = record.pop("citation")
                 record["date_modified"] = record.pop("modified")
-                worms_data.append(record)
+                new_worms_data.append(record)
 
-            wormsResult["data"] = worms_data
+            worms_result["data"] = new_worms_data
 
-        valid_worms_doc = next((d for d in wormsData if d["status"] == "accepted"), None)
+        valid_worms_doc = next((d for d in worms_data if d["status"] == "accepted"), None)
         if valid_worms_doc is not None:
-            wormsResult["summary"] = {
+            worms_result["summary"] = {
                 "scientificname": valid_worms_doc["scientificname"],
                 "taxonomicrank": valid_worms_doc["rank"],
-                "taxonomic_authority_url": f"{self.worms_url_base}{valid_worms_doc['AphiaID']}"
+                "taxonomic_authority_url": f"{self.worms_url_base}{valid_worms_doc['AphiaID']}",
+                "match_method": worms_result["processing_metadata"]["status_message"]
             }
 
-        return wormsResult
+        return worms_result
 

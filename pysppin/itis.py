@@ -8,21 +8,9 @@ from io import BytesIO
 import sys
 import sqlite3
 import pandas as pd
-import numpy as np
 import datetime
 
 common_utils = utils.Utils()
-
-
-class ItisCache:
-    def __init__(self):
-        self.description = "Set of functions for interacting with the ITIS Cache"
-
-    def get_itis_cache(self, cache_type="file", cache_location=f'{os.getenv("DATA_CACHE")}/sppin/itis'):
-        if not os.path.exists(cache_location):
-            raise ValueError(f'The cache file does not exist in the specified location')
-
-        return pd.read_pickle(cache_location)
 
 
 class ItisDb:
@@ -245,50 +233,23 @@ class ItisApi:
 
         return api
 
-    def search(self, name_or_tsn, name_source=None, check_cache=False, cache_threshold=30, return_result=True):
+    def search(self, sppin_key, name_source=None, source_date=None):
         itis_result = common_utils.processing_metadata()
+        itis_result["sppin_key"] = sppin_key
+        itis_result["date_processed"] = itis_result["processing_metadata"]["date_processed"]
         itis_result["processing_metadata"]["status"] = "failure"
         itis_result["processing_metadata"]["status_message"] = "Not Matched"
         itis_result["processing_metadata"]["details"] = list()
         itis_result["processing_metadata"]["from_cache"] = False
 
-        if name_or_tsn.isdigit():
-            search_param = "TSN"
-        else:
-            search_param = "Scientific Name"
-
-        itis_result["processing_metadata"]["search_key"] = f"{search_param}:{name_or_tsn}"
-
-        if check_cache:
-            itis_cache = ItisCache().get_itis_cache()
-
-            existing_record = itis_cache[
-                itis_cache["processing_metadata.search_key"] == itis_result["processing_metadata"]["search_key"]
-            ]
-
-            if not existing_record.empty:
-                start_date = datetime.datetime.now() + datetime.timedelta(-cache_threshold)
-                check_diff = pd.to_datetime(existing_record["processing_metadata.date_processed"]) > \
-                             pd.to_datetime(start_date)
-                if not return_result:
-                    return None
-
-                if check_diff.bool():
-                    d_existing_record = existing_record.replace({np.nan: None}).to_dict(orient="records")
-                    itis_result = common_utils.denormalize_dict(d_existing_record[0])
-                    itis_result["processing_metadata"]["from_cache"] = True
-
-                    return itis_result
-
-        itis_result["parameters"] = {
-            search_param: name_or_tsn
-        }
-
         if name_source is not None:
-            itis_result["parameters"]["Name Source"] = name_source
+            itis_result["processing_metadata"]["name_source"] = name_source
+
+        if source_date is not None:
+            itis_result["processing_metadata"]["source_date"] = source_date
 
         # Set up the primary search method for an exact match on scientific name
-        url_exactMatch = self.get_itis_search_url(name_or_tsn, False, False)
+        url_exactMatch = self.get_itis_search_url(sppin_key.split(":")[1], False, False)
 
         # We have to try the main search queries because the ITIS service does not return an elegant error
         try:
@@ -304,7 +265,7 @@ class ItisApi:
             itis_result["processing_metadata"]["details"].append({"Exact Match Fail": url_exactMatch})
 
             # if we didn't get anything with an exact name match, run the sequence using fuzziness level
-            url_fuzzyMatch = self.get_itis_search_url(name_or_tsn, True, False)
+            url_fuzzyMatch = self.get_itis_search_url(sppin_key.split(":")[1], True, False)
 
             try:
                 r_fuzzyMatch = requests.get(url_fuzzyMatch).json()
@@ -384,10 +345,38 @@ class ItisApi:
             itis_result["summary"] = {
                 "scientificname": valid_itis_doc["nameWInd"],
                 "taxonomicrank": valid_itis_doc["rank"],
-                "taxonomic_authority_url": f"{self.itis_url_base}{valid_itis_doc['tsn']}"
+                "taxonomic_authority_url": f"{self.itis_url_base}{valid_itis_doc['tsn']}",
+                "match_method": itis_result["processing_metadata"]["status_message"]
             }
             if "commonnames" in valid_itis_doc:
                 itis_result["summary"]["commonname"] = next((n["name"] for n in valid_itis_doc["commonnames"]
                                                              if n["language"] == "English"), None)
 
         return itis_result
+
+    def check_cache(self, mq_list, operation="processable", cache_threshold=30):
+        df_itis_cache = ItisCache().get_itis_cache()
+        search_key_list = [i["search_key"] for i in mq_list]
+        start_date = datetime.datetime.now() + datetime.timedelta(-cache_threshold)
+
+        if operation == "processable":
+            not_processable = df_itis_cache[
+                (df_itis_cache["processing_metadata.search_key"].isin(search_key_list))
+                &
+                (pd.to_datetime(df_itis_cache["processing_metadata.date_processed"]) > pd.to_datetime(start_date))
+                ]["processing_metadata.search_key"].tolist()
+
+            new_list = [i for i in mq_list if i["search_key"] not in not_processable]
+
+            return new_list
+
+        elif operation == "flagged":
+            in_cache_list = df_itis_cache[df_itis_cache["processing_metadata.search_key"].isin(search_key_list)][
+                "processing_metadata.search_key"].tolist()
+            flagged_list = [dict(item, **{'in_cache': False}) for item in mq_list]
+            flagged_list = [dict(item, **{'in_cache': True}) for item in flagged_list if
+                           item["search_key"] in in_cache_list]
+
+            return flagged_list
+
+

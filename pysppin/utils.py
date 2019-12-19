@@ -1,13 +1,18 @@
-from datetime import datetime
+import datetime
 from collections import Counter
 import random
 import os
 import json
 from genson import SchemaBuilder
+from jsonschema import validate
 import pkg_resources
 import sciencebasepy
 import re
 from ftfy import fix_text
+import pandas as pd
+import sqlite3
+from sqlite_utils import Database
+from pandas.io.json import json_normalize
 
 
 class Sciencebase:
@@ -45,10 +50,84 @@ class Utils:
         packaged_stub = {
             "processing_metadata": {
                 "status": default_status,
-                "date_processed": datetime.utcnow().isoformat()
+                "date_processed": datetime.datetime.utcnow().isoformat()
             }
         }
         return packaged_stub
+
+    def get_cache(self, cache_name, cache_location):
+        file_location = f"{cache_location}/{cache_name}"
+
+        if not os.path.exists(file_location):
+            raise ValueError(f'The cache file does not exist in the specified location: {file_location}')
+
+        return pd.read_pickle(file_location)
+
+    def cache_df(self, df, file_name, cache_location, file_type="pickle", ):
+        cache_location = f"{cache_location}{cache_path}"
+
+        if not os.path.exists(cache_location):
+            raise ValueError(f'The cache location does not exist: {cache_location}')
+
+        file_location = f"{cache_location}/{file_name}"
+
+        if file_type == "pickle":
+            df.to_pickle(file_location)
+        elif file_type == "feather":
+            df.to_feather(file_location)
+
+        return file_location
+
+    def key_in_cache(self, cache_name, cache_location, search_key, return_record=False):
+        cache_data = self.get_cache(cache_name, cache_location)
+
+        existing_record = cache_data[cache_data["processing_metadata.search_key"] == search_key]
+
+        if existing_record.empty:
+            return False
+
+        if return_record:
+            return True, existing_record.to_dict("records")
+
+        return True
+
+    def append_to_cache(self, cache_name, cache_location, new_record, return_cache=False):
+        current_cache = self.get_cache(cache_name, cache_location)
+        df_new_record = json_normalize(new_record)
+        new_cache = pd.concat([current_cache, df_new_record], ignore_index=True, sort=False)
+
+        self.cache_df(new_cache, cache_name, cache_location)
+
+        if return_cache:
+            return new_cache
+        else:
+            return True
+
+    def filter_mq_list(self, mq_list, cache_name, operation="processable", cache_threshold=30):
+        df_cache = self.get_cache(cache_name)
+
+        search_key_list = [i["search_key"] for i in mq_list]
+        start_date = datetime.datetime.now() + datetime.timedelta(-cache_threshold)
+
+        if operation == "processable":
+            not_processable = df_cache[
+                (df_cache["processing_metadata.search_key"].isin(search_key_list))
+                &
+                (pd.to_datetime(df_cache["processing_metadata.date_processed"]) > pd.to_datetime(start_date))
+                ]["processing_metadata.search_key"].tolist()
+
+            new_list = [i for i in mq_list if i["search_key"] not in not_processable]
+
+            return new_list
+
+        elif operation == "flagged":
+            in_cache_list = df_cache[df_cache["processing_metadata.search_key"].isin(search_key_list)][
+                "processing_metadata.search_key"].tolist()
+            flagged_list = [dict(item, **{'in_cache': False}) for item in mq_list]
+            flagged_list = [dict(item, **{'in_cache': True}) for item in flagged_list if
+                           item["search_key"] in in_cache_list]
+
+            return flagged_list
 
     def doc_cache(self, cache_path, cache_data=None, return_sample=True):
         '''
@@ -131,6 +210,37 @@ class Utils:
             return f"Error: {e}"
 
         return builder.to_json()
+
+    def validate_data(self, dataset, schema):
+        if isinstance(dataset, str):
+            dataset = json.loads(dataset)
+
+        if isinstance(dataset, dict):
+            dataset = [dataset]
+
+        if len(dataset) == 0:
+            return "Error: your list of objects (dictionaries) must contain at least one object to process"
+
+        if not isinstance(dataset[0], dict):
+            return "Error: your list must contain a dictionary type object"
+
+        record_report = list()
+        for record in dataset:
+            try:
+                validate(record, schema)
+                record_report.append({
+                    "record": record,
+                    "valid": True
+                })
+            except Exception as e:
+                record_report.append({
+                    "record": record,
+                    "valid": False,
+                    "validator": e.validator,
+                    "validator_message": e.message
+                })
+
+        return record_report
 
     def alter_keys(self, item, mappings, layer=None, key=None):
         if layer is None:
@@ -249,6 +359,28 @@ class Utils:
 
         return new_dict
 
+    def spp_queue_assembler(self, name_list, source):
+        q_list = [
+            {
+                "source": source,
+                "search_key": f"Scientific Name:{i}",
+                "search_term": i
+            } for i in name_list
+        ]
+
+        return q_list
+
+    def tsn_queue_assembler(self, tsn_list, source):
+        q_list = [
+            {
+                "source": source,
+                "search_key": f"TSN:{i}",
+                "search_term": i
+            } for i in tsn_list
+        ]
+
+        return q_list
+
 
 class AttributeValueCount:
     def __init__(self, iterable, *, missing=None):
@@ -283,3 +415,155 @@ class AttributeValueCount:
             '\t {}: {}'.format(value, count)
             for value, count in self._counts[key].items()
         ))
+
+
+class Sql:
+    def __init__(self, cache_location=None):
+        self.description = "Temporary way to externalize messages from processing"
+        self.cache_location = cache_location
+
+    def get_db(self, db_name):
+        return Database(f"{self.cache_location}/{db_name}.db")
+
+    def insert_record(self, db_name, table_name, record, mq=False):
+        db = Database(sqlite3.connect(f"{self.cache_location}/{db_name}.db", check_same_thread=False))
+
+        if not isinstance(record, dict):
+            raise ValueError("Record must be a dictionary")
+
+        if mq:
+            record = {
+                "date_inserted": datetime.datetime.utcnow().isoformat(),
+                "body": record
+            }
+
+        return db[table_name].insert(record, hash_id="id").last_pk
+
+    def bulk_insert(self, db_name, table_name, bulk_data):
+        db = Database(f"{self.cache_location}/{db_name}.db")
+
+        if not isinstance(bulk_data, list):
+            raise ValueError("Bulk data must be a list")
+
+        if not isinstance(bulk_data[0], dict):
+            raise ValueError("Bulk data must contain a list of dictionary objects")
+
+        db[table_name].insert_all(bulk_data, hash_id="id")
+
+        return len(bulk_data)
+
+    def get_single_record(self, db_name, table_name, json_to_dict=True):
+        db = Database(f"{self.cache_location}/{db_name}.db")
+
+        for row in db[table_name].rows_where("0 = 0"):
+            if json_to_dict:
+                record = dict()
+                for k, v in row.items():
+                    try:
+                        record[k] = json.loads(v)
+                    except:
+                        record[k] = v
+            else:
+                record = row
+
+            return record
+
+    def get_all_records(self, db_name, table_name, json_to_dict=True):
+        db = Database(f"{self.cache_location}/{db_name}.db")
+
+        result_list = list()
+        for row in db[table_name].rows:
+            if json_to_dict:
+                record = dict()
+                for k, v in row.items():
+                    try:
+                        record[k] = json.loads(v)
+                    except:
+                        record[k] = v
+            else:
+                record = row
+            result_list.append(record)
+
+        if len(result_list) == 0:
+            return None
+
+        return result_list
+
+    def get_select_records(self, db_name, table_name, where, value, json_to_dict=True):
+        db = Database(f"{self.cache_location}/{db_name}.db")
+
+        result_list = list()
+        for row in db[table_name].rows_where(where, [value]):
+            if json_to_dict:
+                record = dict()
+                for k, v in row.items():
+                    try:
+                        record[k] = json.loads(v)
+                    except:
+                        record[k] = v
+            else:
+                record = row
+            result_list.append(record)
+
+        if len(result_list) == 0:
+            return None
+
+        return result_list
+
+    def delete_record(self, db_name, table_name, identifier):
+        db = Database(f"{self.cache_location}/{db_name}.db")
+
+        db[table_name].delete(identifier)
+
+        return identifier
+
+    def insert_sppin_props(self, db_name, table_name, props, identifiers):
+        db = Database(f"{self.cache_location}/{db_name}.db")
+
+        returns = list()
+        for identifier in identifiers:
+            returns.append(
+                db[table_name].update(
+                    identifier,
+                    props,
+                    alter=True
+                )
+            )
+
+        return returns
+
+    def sppin_key_current_record(self, table_name, sppin_key, currency_threshold=-30, db_name="sppin"):
+        db = Database(sqlite3.connect(f"{self.cache_location}/{db_name}.db"))
+
+        currency_date = (datetime.datetime.now() + datetime.timedelta(currency_threshold)).isoformat()
+
+        where = "sppin_key = ? and date_processed > ?"
+        values = [sppin_key, currency_date]
+
+        result_list = list()
+        for row in db[table_name].rows_where(where, values):
+            record = dict()
+            for k, v in row.items():
+                try:
+                    record[k] = json.loads(v)
+                except:
+                    record[k] = v
+            result_list.append(record)
+
+        if len(result_list) == 0:
+            return None
+
+        # This takes care of an issue where multiple records were being inserted for a given sppin_key value in
+        # parallel processing
+        if len(result_list) > 1:
+            for result in result_list[1:]:
+                self.delete_record(
+                    db_name,
+                    table_name,
+                    result["id"]
+                )
+
+        return result_list[0]
+
+
+

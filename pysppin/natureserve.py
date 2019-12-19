@@ -11,9 +11,22 @@ class Natureserve:
         self.ns_api_base = "https://services.natureserve.org/idd/rest/v1"
         self.us_name_search_api = "nationalSpecies/summary/nameSearch?nationCode=US"
 
-    def search(self, scientificname, name_source=None):
+    def search(self, sppin_key, name_source=None):
+        '''
+        This function searches the open public API for the NatureServe Explorer system of species information and
+        assembles a basic summary of available information.
+
+        :param sppin_key: Search term in the form "Scientific Name:<species scientific name>"
+        :param name_source: String indicating where the scientific name was sourced for tracking purposes
+        :return: Dictionary structure containing the results of the name search and the information from the API
+        transformed to a dictionary from XML
+        '''
+        sppin_key_parts = sppin_key.split(":")
+        scientificname = sppin_key_parts[1]
 
         result = common_utils.processing_metadata()
+        result["sppin_key"] = sppin_key
+        result["date_processed"] = result["processing_metadata"]["date_processed"]
         result["processing_metadata"]["status"] = "failure"
         result["processing_metadata"]["status_message"] = "Not Matched"
         result["processing_metadata"]["api"] = \

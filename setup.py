@@ -17,7 +17,9 @@ setup(
         'genson',
         'ftfy',
         'bs4',
-        'sciencebasepy'
+        'sciencebasepy',
+        'pandas',
+        'sqlite_utils'
     ],
     zip_safe=False
 )

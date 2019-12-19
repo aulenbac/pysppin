@@ -23,22 +23,20 @@ class Gbif:
 
         return taxonomy
 
-    def summarize_us_species(self, scientificname, name_source=None):
+    def summarize_us_species(self, sppin_key, name_source=None):
+        sppin_key_parts = sppin_key.split(":")
+
         result = common_utils.processing_metadata()
+        result["sppin_key"] = sppin_key
+        result["date_processed"] = result["processing_metadata"]["date_processed"]
         result["processing_metadata"]["status"] = "failure"
         result["processing_metadata"]["status_message"] = "Not Matched"
         result["processing_metadata"]["api"] = [
-            self.gbif_species_suggest_stub.format(scientificname)
+            self.gbif_species_suggest_stub.format(sppin_key_parts[1])
         ]
+        result["processing_metadata"]["name_source"] = name_source
 
-        result["parameters"] = {
-            "Scientific Name": scientificname
-        }
-
-        if name_source is not None:
-            result["parameters"]["Name Source"] = name_source
-
-        gbif_spp_search_results = requests.get(self.gbif_species_suggest_stub.format(scientificname)).json()
+        gbif_spp_search_results = requests.get(self.gbif_species_suggest_stub.format(sppin_key_parts[1])).json()
 
         if len(gbif_spp_search_results) == 0:
             result["processing_metadata"]["status"] = "failure"
@@ -66,7 +64,7 @@ class Gbif:
             result["processing_metadata"]["api"].append(
                 self.gbif_spp_occ_summary_api.format(
                     "scientificName",
-                    scientificname
+                    sppin_key_parts[1]
                 )
             )
 
