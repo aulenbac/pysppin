@@ -179,13 +179,15 @@ class Utils:
                 f"Document Number {doc_number}": the_cache[doc_number]
             }
 
-    def generate_json_schema(self, data):
+    def generate_json_schema(self, data, return_type="json", build_definitions=False):
         '''
         Uses the genson package to introspect json type data and generate the skeleton of a JSON Schema document
         (Draft 6) for further documentation.
 
         :param data: must be one of the following - python dictionary object, python list of dictionaries, json string
         that can be loaded to a dictionary or list of dictionaries
+        :param return_type: JSON string or defaults to dictionary
+        :param build_definitions: Run a process to prompt for title and description on schema and properties
         :return: json string containing the generated json schema skeleton
         '''
         if isinstance(data, str):
@@ -209,7 +211,23 @@ class Utils:
         except Exception as e:
             return f"Error: {e}"
 
-        return builder.to_json()
+        schema = json.loads(builder.to_json())
+
+        if build_definitions:
+            schema["title"] = input("schema title: ")
+            schema["description"] = input("schema description: ")
+            new_props = dict()
+            for item in schema["properties"].items():
+                new_props[item[0]] = dict()
+                new_props[item[0]]["type"] = item[1]["type"]
+                new_props[item[0]]["title"] = input(f"title for {item[0]}: ")
+                new_props[item[0]]["description"] = input(f"description for {item[0]}: ")
+            schema["properties"] = new_props
+
+        if return_type == "json":
+            schema = json.dumps(schema)
+
+        return schema
 
     def validate_data(self, dataset, schema):
         if isinstance(dataset, str):
